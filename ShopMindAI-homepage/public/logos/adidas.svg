@@ -1,0 +1,11 @@
+<div
+  key={i}
+  className="flex items-center justify-center bg-white rounded-2xl shadow-md h-32 w-40 p-4 border border-gray-200"
+>
+  <img
+    src={`/logos/${folder}/${logo}`}
+    alt={logo.replace(/\.[^/.]+$/, "")}
+    className="w-28 h-28 object-contain"
+    draggable={false}
+  />
+</div> 
