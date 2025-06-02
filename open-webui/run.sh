@@ -3,7 +3,7 @@
 image_name="open-webui"
 container_name="open-webui"
 host_port=3000
-container_port=8080
+container_port=3000  # <-- schimbi aici 8080 -> 3000
 
 docker build -t "$image_name" .
 docker stop "$container_name" &>/dev/null || true
