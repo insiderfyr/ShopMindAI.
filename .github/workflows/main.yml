@@ -1,0 +1,590 @@
+name: ShopGPT CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  GO_VERSION: '1.21'
+  NODE_VERSION: '20'
+  PNPM_VERSION: '8'
+
+jobs:
+  # 🔍 Code Quality Checks
+  quality-checks:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - uses: actions/cache@v4
+        name: Setup pnpm cache
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm run lint
+
+      - name: Run Prettier
+        run: pnpm run format:check
+
+      - name: Run TypeScript check
+        run: pnpm run type-check
+
+      - name: Run Go lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          working-directory: ./services
+
+      - name: Security scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # 🧪 Backend Tests
+  backend-tests:
+    name: Backend Tests - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, chat-service, auth-service, search-service]
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ matrix.service }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.service }}-
+
+      - name: Run unit tests
+        working-directory: ./services/${{ matrix.service }}
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Run integration tests
+        working-directory: ./services/${{ matrix.service }}
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: test
+          DB_PASSWORD: test
+          DB_NAME: testdb
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+        run: |
+          go test -v -tags=integration ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./services/${{ matrix.service }}/coverage.out
+          flags: ${{ matrix.service }}
+          name: ${{ matrix.service }}-coverage
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.service }}-coverage
+          path: ./services/${{ matrix.service }}/coverage.html
+
+  # 🧪 Frontend Tests
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - uses: actions/cache@v4
+        name: Setup pnpm cache
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run unit tests
+        run: pnpm run test:unit
+
+      - name: Run component tests
+        run: pnpm run test:components
+
+      - name: Generate coverage report
+        run: pnpm run test:coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./apps/web/coverage/lcov.info
+          flags: frontend
+          name: frontend-coverage
+
+  # 🎭 E2E Tests
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps
+
+      - name: Build frontend
+        run: pnpm run build
+
+      - name: Run E2E tests
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 30
+
+  # 🏗️ Build Docker Images
+  build-images:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [quality-checks, backend-tests, frontend-tests]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        include:
+          - service: user-service
+            context: ./services/user-service
+          - service: chat-service
+            context: ./services/chat-service
+          - service: auth-service
+            context: ./services/auth-service
+          - service: search-service
+            context: ./services/search-service
+          - service: web
+            context: ./apps/web
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+  # 🚀 Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images, e2e-tests]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: staging
+      url: https://staging.shopgpt.com
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=${PWD}/kubeconfig" >> $GITHUB_ENV
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install shopgpt ./k8s/helm/shopgpt \
+            --namespace shopgpt-staging \
+            --create-namespace \
+            --values ./k8s/helm/shopgpt/values.staging.yaml \
+            --set image.tag=${{ github.sha }} \
+            --set image.registry=${{ env.REGISTRY }} \
+            --set image.repository=${{ env.IMAGE_PREFIX }} \
+            --wait \
+            --timeout 10m
+
+      - name: Run smoke tests
+        run: |
+          kubectl run smoke-test \
+            --image=curlimages/curl:latest \
+            --rm \
+            --attach \
+            --restart=Never \
+            --namespace=shopgpt-staging \
+            -- \
+            sh -c "curl -f https://staging-api.shopgpt.com/health || exit 1"
+
+      - name: Notify Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Staging deployment ${{ job.status }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # 🚀 Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images, e2e-tests]
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_environment == 'production')
+    environment:
+      name: production
+      url: https://shopgpt.com
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.PRODUCTION_KUBECONFIG }}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=${PWD}/kubeconfig" >> $GITHUB_ENV
+
+      - name: Deploy with Helm (Blue-Green)
+        run: |
+          # Deploy to green environment
+          helm upgrade --install shopgpt-green ./k8s/helm/shopgpt \
+            --namespace shopgpt-production \
+            --create-namespace \
+            --values ./k8s/helm/shopgpt/values.production.yaml \
+            --set image.tag=${{ github.sha }} \
+            --set image.registry=${{ env.REGISTRY }} \
+            --set image.repository=${{ env.IMAGE_PREFIX }} \
+            --set deployment.color=green \
+            --wait \
+            --timeout 15m
+
+      - name: Run production smoke tests
+        run: |
+          kubectl run prod-smoke-test \
+            --image=curlimages/curl:latest \
+            --rm \
+            --attach \
+            --restart=Never \
+            --namespace=shopgpt-production \
+            -- \
+            sh -c "curl -f https://green.shopgpt.com/health || exit 1"
+
+      - name: Switch traffic to green
+        run: |
+          kubectl patch service shopgpt-api \
+            --namespace shopgpt-production \
+            --type='json' \
+            -p='[{"op": "replace", "path": "/spec/selector/color", "value": "green"}]'
+
+      - name: Monitor deployment
+        run: |
+          # Wait for 5 minutes and check error rates
+          sleep 300
+          ERROR_RATE=$(kubectl exec -n shopgpt-production deployment/prometheus -- \
+            promtool query instant 'rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m])' | \
+            grep -oE '[0-9]+\.[0-9]+' | head -1)
+          
+          if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+            echo "Error rate too high: $ERROR_RATE"
+            exit 1
+          fi
+
+      - name: Cleanup old deployment
+        if: success()
+        run: |
+          helm uninstall shopgpt-blue --namespace shopgpt-production || true
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          kubectl patch service shopgpt-api \
+            --namespace shopgpt-production \
+            --type='json' \
+            -p='[{"op": "replace", "path": "/spec/selector/color", "value": "blue"}]'
+          
+          helm uninstall shopgpt-green --namespace shopgpt-production || true
+
+      - name: Create GitHub Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            ## Changes in this Release
+            - Deployed commit: ${{ github.sha }}
+            - Deployment time: ${{ github.event.head_commit.timestamp }}
+            
+            ## Docker Images
+            - `${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/user-service:${{ github.sha }}`
+            - `${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/chat-service:${{ github.sha }}`
+            - `${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/auth-service:${{ github.sha }}`
+            - `${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/search-service:${{ github.sha }}`
+            - `${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/web:${{ github.sha }}`
+          draft: false
+          prerelease: false
+
+      - name: Notify Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Production deployment ${{ job.status }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # 📊 Performance Tests
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run k6 performance tests
+        uses: k6io/action@v0.3.0
+        with:
+          filename: tests/performance/load-test.js
+          cloud: true
+        env:
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          BASE_URL: https://staging-api.shopgpt.com
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('k6-results.json', 'utf8'));
+            
+            const comment = `## 📊 Performance Test Results
+            
+            - **Average Response Time**: ${results.avg_response_time}ms
+            - **95th Percentile**: ${results.p95}ms
+            - **Success Rate**: ${results.success_rate}%
+            - **RPS**: ${results.rps}
+            
+            [View full report](https://app.k6.io/runs/${results.run_id})`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # 🔒 Security Scan
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.event_name == 'push'
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/chat-service:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/golang@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high

@@ -1,0 +1,337 @@
+groups:
+  # Service Health Alerts
+  - name: service_health
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"shopgpt-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 2 minutes."
+          runbook_url: "https://wiki.shopgpt.com/runbooks/service-down"
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+            /
+            sum(rate(http_requests_total[5m])) by (service)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High error rate for {{ $labels.service }}"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.service }}"
+          dashboard: "https://grafana.shopgpt.com/d/service-overview?var-service={{ $labels.service }}"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (service, le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High latency for {{ $labels.service }}"
+          description: "95th percentile latency is {{ $value }}s for {{ $labels.service }}"
+          dashboard: "https://grafana.shopgpt.com/d/service-latency?var-service={{ $labels.service }}"
+
+  # Resource Utilization Alerts
+  - name: resource_utilization
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: |
+          (
+            sum(rate(container_cpu_usage_seconds_total[5m])) by (pod, container)
+            / sum(container_spec_cpu_quota/container_spec_cpu_period) by (pod, container)
+          ) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High CPU usage for {{ $labels.pod }}/{{ $labels.container }}"
+          description: "CPU usage is {{ $value | humanizePercentage }} for container {{ $labels.container }} in pod {{ $labels.pod }}"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            sum(container_memory_working_set_bytes) by (pod, container)
+            / sum(container_spec_memory_limit_bytes) by (pod, container)
+          ) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High memory usage for {{ $labels.pod }}/{{ $labels.container }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} for container {{ $labels.container }} in pod {{ $labels.pod }}"
+
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes"
+
+      - alert: PodNotReady
+        expr: |
+          sum by (namespace, pod) (
+            kube_pod_status_phase{phase=~"Pending|Unknown"} > 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} is not ready"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for more than 10 minutes"
+
+  # Database Alerts
+  - name: database
+    interval: 30s
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "PostgreSQL instance {{ $labels.instance }} is down"
+          description: "PostgreSQL has been down for more than 1 minute"
+
+      - alert: PostgresHighConnections
+        expr: |
+          sum(pg_stat_database_numbackends) by (instance)
+          / sum(pg_settings_max_connections) by (instance) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "High connection usage on PostgreSQL {{ $labels.instance }}"
+          description: "Connection usage is {{ $value | humanizePercentage }} of max connections"
+
+      - alert: PostgresReplicationLag
+        expr: pg_replication_lag > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "High replication lag on PostgreSQL"
+          description: "Replication lag is {{ $value }}s"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Redis instance {{ $labels.instance }} is down"
+          description: "Redis has been down for more than 1 minute"
+
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "High memory usage on Redis {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} of max memory"
+
+  # Chat Service Specific Alerts
+  - name: chat_service
+    interval: 30s
+    rules:
+      - alert: WebSocketConnectionsHigh
+        expr: shopgpt_websocket_connections_active > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: chat
+        annotations:
+          summary: "High number of WebSocket connections"
+          description: "Active WebSocket connections: {{ $value }}"
+
+      - alert: ChatResponseTimeHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(shopgpt_chat_response_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: chat
+        annotations:
+          summary: "High chat response time"
+          description: "95th percentile chat response time is {{ $value }}s"
+
+      - alert: AIServiceDown
+        expr: shopgpt_ai_service_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: chat
+        annotations:
+          summary: "AI service is down"
+          description: "AI service has been unavailable for more than 2 minutes"
+
+  # Search Service Alerts
+  - name: search_service
+    interval: 30s
+    rules:
+      - alert: SearchIndexingFailed
+        expr: increase(shopgpt_search_indexing_failures_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: search
+        annotations:
+          summary: "Search indexing failures"
+          description: "{{ $value }} indexing failures in the last 5 minutes"
+
+      - alert: SearchLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(shopgpt_search_duration_seconds_bucket[5m])) by (store, le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: search
+        annotations:
+          summary: "High search latency for {{ $labels.store }}"
+          description: "95th percentile search latency is {{ $value }}s for store {{ $labels.store }}"
+
+      - alert: StoreAPIDown
+        expr: shopgpt_store_api_up == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: search
+        annotations:
+          summary: "Store API {{ $labels.store }} is down"
+          description: "{{ $labels.store }} API has been unavailable for more than 5 minutes"
+
+  # Business Metrics Alerts
+  - name: business_metrics
+    interval: 1m
+    rules:
+      - alert: LowSearchConversionRate
+        expr: |
+          (
+            sum(rate(shopgpt_product_clicks_total[1h]))
+            / sum(rate(shopgpt_searches_total[1h]))
+          ) < 0.05
+        for: 30m
+        labels:
+          severity: warning
+          team: product
+        annotations:
+          summary: "Low search to click conversion rate"
+          description: "Conversion rate is {{ $value | humanizePercentage }}"
+
+      - alert: HighCartAbandonmentRate
+        expr: |
+          (
+            sum(rate(shopgpt_cart_abandoned_total[1h]))
+            / sum(rate(shopgpt_cart_created_total[1h]))
+          ) > 0.7
+        for: 30m
+        labels:
+          severity: warning
+          team: product
+        annotations:
+          summary: "High cart abandonment rate"
+          description: "Cart abandonment rate is {{ $value | humanizePercentage }}"
+
+  # Infrastructure Alerts
+  - name: infrastructure
+    interval: 30s
+    rules:
+      - alert: NodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Kubernetes node {{ $labels.node }} is not ready"
+          description: "Node {{ $labels.node }} has been in NotReady state for more than 5 minutes"
+
+      - alert: DiskSpaceLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            / node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Available disk space is {{ $value | humanizePercentage }}"
+
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "SSL certificate expiring soon for {{ $labels.instance }}"
+          description: "Certificate expires in {{ $value }} days"
+
+  # Security Alerts
+  - name: security
+    interval: 30s
+    rules:
+      - alert: UnauthorizedAccessAttempts
+        expr: |
+          sum(rate(shopgpt_auth_failures_total[5m])) by (service) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "High number of auth failures for {{ $labels.service }}"
+          description: "{{ $value }} auth failures per second"
+
+      - alert: SuspiciousActivity
+        expr: |
+          sum(rate(shopgpt_suspicious_requests_total[5m])) by (source_ip) > 100
+        for: 5m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "Suspicious activity from {{ $labels.source_ip }}"
+          description: "{{ $value }} suspicious requests per second from {{ $labels.source_ip }}"
+
+      - alert: RateLimitExceeded
+        expr: |
+          sum(rate(shopgpt_rate_limit_exceeded_total[5m])) by (user_id) > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Rate limit exceeded by user {{ $labels.user_id }}"
+          description: "User {{ $labels.user_id }} exceeded rate limit {{ $value }} times"
