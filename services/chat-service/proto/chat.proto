@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/shopmindai/shopmindai/services/chat-service/pkg/api/v1;chatv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Chat service definition
+service ChatService {
+  // Conversation management
+  rpc CreateConversation(CreateConversationRequest) returns (Conversation) {
+    option (google.api.http) = {
+      post: "/api/chat/conversations"
+      body: "*"
+    };
+  }
+  
+  rpc GetConversation(GetConversationRequest) returns (Conversation) {
+    option (google.api.http) = {
+      get: "/api/chat/conversations/{conversation_id}"
+    };
+  }
+  
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsResponse) {
+    option (google.api.http) = {
+      get: "/api/chat/conversations"
+    };
+  }
+  
+  rpc UpdateConversation(UpdateConversationRequest) returns (Conversation) {
+    option (google.api.http) = {
+      patch: "/api/chat/conversations/{conversation_id}"
+      body: "*"
+    };
+  }
+  
+  rpc DeleteConversation(DeleteConversationRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/chat/conversations/{conversation_id}"
+    };
+  }
+  
+  // Message management
+  rpc SendMessage(SendMessageRequest) returns (Message) {
+    option (google.api.http) = {
+      post: "/api/chat/conversations/{conversation_id}/messages"
+      body: "*"
+    };
+  }
+  
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse) {
+    option (google.api.http) = {
+      get: "/api/chat/conversations/{conversation_id}/messages"
+    };
+  }
+  
+  // Streaming
+  rpc StreamMessages(StreamMessagesRequest) returns (stream MessageChunk);
+  
+  // Search
+  rpc SearchConversations(SearchConversationsRequest) returns (SearchConversationsResponse) {
+    option (google.api.http) = {
+      get: "/api/chat/search"
+    };
+  }
+}
+
+// Message types
+message Conversation {
+  string id = 1;
+  string user_id = 2;
+  string title = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  Message last_message = 6;
+  int32 message_count = 7;
+  map<string, string> metadata = 8;
+}
+
+message Message {
+  string id = 1;
+  string conversation_id = 2;
+  string role = 3; // user, assistant, system
+  string content = 4;
+  google.protobuf.Timestamp created_at = 5;
+  map<string, string> metadata = 6;
+  repeated Attachment attachments = 7;
+}
+
+message Attachment {
+  string id = 1;
+  string filename = 2;
+  string content_type = 3;
+  int64 size = 4;
+  string url = 5;
+}
+
+message MessageChunk {
+  string message_id = 1;
+  string chunk = 2;
+  bool is_final = 3;
+}
+
+// Request/Response messages
+message CreateConversationRequest {
+  string title = 1;
+  map<string, string> metadata = 2;
+}
+
+message GetConversationRequest {
+  string conversation_id = 1;
+}
+
+message ListConversationsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string order_by = 3; // created_at_desc, updated_at_desc
+}
+
+message ListConversationsResponse {
+  repeated Conversation conversations = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message UpdateConversationRequest {
+  string conversation_id = 1;
+  string title = 2;
+  map<string, string> metadata = 3;
+}
+
+message DeleteConversationRequest {
+  string conversation_id = 1;
+}
+
+message SendMessageRequest {
+  string conversation_id = 1;
+  string content = 2;
+  repeated Attachment attachments = 3;
+  map<string, string> metadata = 4;
+  bool stream = 5;
+}
+
+message GetMessagesRequest {
+  string conversation_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message GetMessagesResponse {
+  repeated Message messages = 1;
+  string next_page_token = 2;
+}
+
+message StreamMessagesRequest {
+  string conversation_id = 1;
+  string content = 2;
+}
+
+message SearchConversationsRequest {
+  string query = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message SearchConversationsResponse {
+  repeated Conversation conversations = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}

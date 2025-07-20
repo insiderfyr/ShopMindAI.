@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chatgpt-clone
+  labels:
+    app: chatgpt-clone
+    environment: production

@@ -1,0 +1,196 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ChatGPT Exact Color Palette */
+:root {
+  /* Light mode - exact ChatGPT colors */
+  --main-bg: #ffffff;
+  --sidebar-bg: #f7f7f8;
+  --chat-bg: #ffffff;
+  --input-bg: #ffffff;
+  --text-primary: #0d0d0d;
+  --text-secondary: #666666;
+  --text-muted: #8e8ea0;
+  --border-color: #e5e5e5;
+  --hover-bg: #f7f7f8;
+  --user-msg-bg: #f7f7f8;
+  --assistant-msg-bg: #ffffff;
+  --accent-color: #10a37f;
+  --danger-color: #ef4444;
+}
+
+/* Dark mode - exact ChatGPT colors */
+[data-theme="dark"] {
+  --main-bg: #343541;
+  --sidebar-bg: #202123;
+  --chat-bg: #343541;
+  --input-bg: #40414f;
+  --text-primary: #ececf1;
+  --text-secondary: #c5c5d2;
+  --text-muted: #8e8ea0;
+  --border-color: #4e4f60;
+  --hover-bg: #2a2b32;
+  --user-msg-bg: #343541;
+  --assistant-msg-bg: #444654;
+  --accent-color: #10a37f;
+  --danger-color: #ef4444;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-[var(--main-bg)] text-[var(--text-primary)];
+    font-family: 'Söhne', system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+  }
+}
+
+@layer components {
+  /* ChatGPT exact sidebar styling */
+  .chatgpt-sidebar {
+    @apply bg-[var(--sidebar-bg)] border-r border-[var(--border-color)];
+    width: 260px;
+  }
+  
+  /* ChatGPT conversation item */
+  .conversation-item {
+    @apply flex items-center gap-3 px-3 py-3 text-sm rounded-md cursor-pointer;
+    @apply hover:bg-[var(--hover-bg)] transition-colors;
+  }
+  
+  .conversation-item.active {
+    @apply bg-[var(--hover-bg)];
+  }
+  
+  /* ChatGPT new chat button */
+  .new-chat-button {
+    @apply flex items-center gap-3 px-3 py-3 mb-2 text-sm rounded-md;
+    @apply border border-[var(--border-color)] hover:bg-[var(--hover-bg)];
+  }
+  
+  /* ChatGPT message styling */
+  .chat-message {
+    @apply py-2 px-4 group w-full;
+  }
+  
+  .chat-message.user {
+    @apply bg-[var(--user-msg-bg)];
+  }
+  
+  .chat-message.assistant {
+    @apply bg-[var(--assistant-msg-bg)];
+  }
+  
+  .message-content {
+    @apply max-w-3xl mx-auto flex gap-6;
+  }
+  
+  /* ChatGPT avatar styling */
+  .avatar-user {
+    @apply w-[30px] h-[30px] rounded-sm bg-[var(--accent-color)] flex items-center justify-center text-white text-sm font-medium;
+  }
+  
+  .avatar-assistant {
+    @apply w-[30px] h-[30px] rounded-sm bg-[var(--accent-color)] flex items-center justify-center;
+  }
+  
+  /* ChatGPT input area */
+  .chat-input-area {
+    @apply absolute bottom-0 left-0 w-full border-t border-transparent bg-gradient-to-t from-[var(--main-bg)] via-[var(--main-bg)] pt-2;
+  }
+  
+  .chat-input-container {
+    @apply max-w-3xl mx-auto px-4 pb-6;
+  }
+  
+  .chat-input {
+    @apply w-full rounded-md border border-[var(--border-color)] bg-[var(--input-bg)] px-4 py-3;
+    @apply shadow-[0_0_10px_rgba(0,0,0,0.1)] dark:shadow-[0_0_10px_rgba(0,0,0,0.5)];
+    @apply focus:outline-none focus:border-[var(--accent-color)];
+  }
+  
+  /* ChatGPT button styling */
+  .submit-button {
+    @apply absolute right-2 bottom-2.5 rounded-md p-1 text-[var(--text-muted)];
+    @apply hover:bg-[var(--hover-bg)] disabled:hover:bg-transparent;
+  }
+  
+  .submit-button.active {
+    @apply text-[var(--text-primary)] bg-[var(--accent-color)] text-white;
+  }
+  
+  /* Markdown styling like ChatGPT */
+  .markdown-content {
+    @apply prose prose-invert max-w-none;
+  }
+  
+  .markdown-content pre {
+    @apply bg-black rounded-md p-4 overflow-x-auto;
+  }
+  
+  .markdown-content code {
+    @apply bg-[var(--hover-bg)] px-1 py-0.5 rounded text-sm;
+  }
+  
+  .markdown-content pre code {
+    @apply bg-transparent p-0;
+  }
+  
+  /* Copy button for code blocks */
+  .copy-button {
+    @apply absolute top-2 right-2 p-2 rounded-md bg-[var(--hover-bg)] text-[var(--text-secondary)];
+    @apply hover:text-[var(--text-primary)] transition-colors;
+  }
+  
+  /* Scrollbar styling like ChatGPT */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border-color);
+    border-radius: 4px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-muted);
+  }
+}
+
+/* Animation for streaming responses */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.streaming-dot {
+  animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .chatgpt-sidebar {
+    @apply fixed inset-y-0 left-0 z-40 w-[260px] transform transition-transform;
+    @apply -translate-x-full;
+  }
+  
+  .chatgpt-sidebar.open {
+    @apply translate-x-0;
+  }
+  
+  .mobile-overlay {
+    @apply fixed inset-0 bg-black bg-opacity-50 z-30;
+  }
+}

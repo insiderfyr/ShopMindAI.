@@ -1,0 +1,30 @@
+{
+  "name": "shopmindai",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml,yaml}\"",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:build": "docker compose build",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.4",
+    "turbo": "latest",
+    "husky": "^9.0.10"
+  },
+  "engines": {
+    "node": ">=18",
+    "npm": ">=9"
+  }
+}

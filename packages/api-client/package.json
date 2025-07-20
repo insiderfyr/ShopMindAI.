@@ -1,0 +1,39 @@
+{
+  "name": "@shopmindai/api-client",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Type-safe API client for ShopMindAI platform",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "type-check": "tsc --noEmit",
+    "generate": "openapi-typescript ./openapi.yaml -o ./src/generated/api.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.17.0",
+    "axios": "^1.6.5",
+    "openapi-fetch": "^0.8.2",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@shopmindai/tsconfig": "workspace:*",
+    "@types/node": "^20.10.6",
+    "openapi-typescript": "^6.7.3",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.1"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  }
+}
