@@ -1,0 +1,271 @@
+# Prometheus Configuration for ChatGPT Clone
+# Enterprise-grade monitoring with multi-target scraping and alerting
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'production'
+    environment: 'prod'
+    project: 'chatgpt-clone'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+      timeout: 10s
+      api_version: v2
+
+# Load rules from files
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Remote write for long-term storage
+remote_write:
+  - url: http://thanos-receive:19291/api/v1/receive
+    queue_config:
+      max_samples_per_send: 10000
+      batch_send_deadline: 5s
+      min_backoff: 100ms
+      max_backoff: 10s
+    metadata_config:
+      send: true
+      send_interval: 1m
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
+
+  # Node Exporter - Infrastructure metrics
+  - job_name: 'node-exporter'
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):10250'
+        replacement: '${1}:9100'
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+
+  # Kubernetes metrics
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+      - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+  # Kubernetes pods
+  - job_name: 'kubernetes-pods'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  # Microservices - User Management Service
+  - job_name: 'user-management-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['user-management-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      - source_labels: [__meta_consul_node]
+        target_label: node
+      - source_labels: [__meta_consul_tags]
+        target_label: tags
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'go_.*'
+        action: drop
+
+  # Chat Service
+  - job_name: 'chat-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['chat-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      - source_labels: [__meta_consul_node]
+        target_label: node
+    metrics_path: '/metrics'
+
+  # AI Service
+  - job_name: 'ai-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['ai-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      - source_labels: [__meta_consul_node]
+        target_label: node
+    scrape_interval: 30s  # Less frequent for AI service
+    scrape_timeout: 10s
+
+  # Session Service
+  - job_name: 'session-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['session-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+
+  # Analytics Service
+  - job_name: 'analytics-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['analytics-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+
+  # Notification Service
+  - job_name: 'notification-service'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services: ['notification-service']
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+
+  # PostgreSQL Exporter
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgresql'
+          component: 'database'
+
+  # Redis Exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          component: 'cache'
+
+  # Kafka Exporter
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+        labels:
+          service: 'kafka'
+          component: 'messaging'
+
+  # Traefik API Gateway
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8082']
+        labels:
+          service: 'traefik'
+          component: 'api-gateway'
+
+  # NGINX Load Balancer
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+        labels:
+          service: 'nginx'
+          component: 'load-balancer'
+
+  # Keycloak
+  - job_name: 'keycloak'
+    static_configs:
+      - targets: ['keycloak:8080']
+        labels:
+          service: 'keycloak'
+          component: 'auth'
+    metrics_path: '/auth/realms/master/metrics'
+
+  # Blackbox Exporter - Endpoint monitoring
+  - job_name: 'blackbox'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - https://api.chatgpt-clone.io/health
+        - https://app.chatgpt-clone.io
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Grafana
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'
+          component: 'monitoring'
+
+  # Jaeger
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:14269']
+        labels:
+          service: 'jaeger'
+          component: 'tracing'
+
+# Service discovery for dynamic environments
+# Consul service discovery for all microservices
+  - job_name: 'consul-services'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        datacenter: 'dc1'
+        tag_separator: ','
+        scheme: 'http'
+        allow_stale: true
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      - source_labels: [__meta_consul_node]
+        target_label: node
+      - source_labels: [__meta_consul_dc]
+        target_label: datacenter
+      - source_labels: [__meta_consul_service_id]
+        target_label: service_id
+      - source_labels: [__meta_consul_service_port]
+        target_label: service_port

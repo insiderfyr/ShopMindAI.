@@ -1,0 +1,343 @@
+# Traefik API Gateway Configuration
+# Enterprise-grade with rate limiting, circuit breakers, and service discovery
+
+# Static Configuration
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
+
+serversTransport:
+  insecureSkipVerify: false
+  maxIdleConnsPerHost: 200
+  forwardingTimeouts:
+    dialTimeout: 30s
+    responseHeaderTimeout: 30s
+    idleConnTimeout: 90s
+
+api:
+  dashboard: true
+  debug: true
+  
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      middlewares:
+        - secure-headers@file
+        - rate-limit@file
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: "api.chatgpt-clone.io"
+            sans:
+              - "*.api.chatgpt-clone.io"
+  metrics:
+    address: ":8082"
+
+providers:
+  consul:
+    endpoints:
+      - "consul:8500"
+    prefix: traefik
+    watch: true
+    
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: admin@chatgpt-clone.io
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+      tlsChallenge: true
+
+log:
+  level: INFO
+  format: json
+  
+accessLog:
+  format: json
+  fields:
+    defaultMode: keep
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        Authorization: drop
+        X-Request-Id: keep
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true
+    buckets:
+      - 0.005
+      - 0.01
+      - 0.025
+      - 0.05
+      - 0.1
+      - 0.25
+      - 0.5
+      - 1.0
+      - 2.5
+      - 5.0
+      - 10.0
+
+tracing:
+  jaeger:
+    samplingServerURL: http://jaeger:5778/sampling
+    localAgentHostPort: jaeger:6831
+    gen128Bit: true
+    propagation: jaeger
+    traceContextHeaderName: trace-id
+
+ping:
+  entryPoint: web
+
+# Dynamic Configuration loaded from file provider
+---
+# /etc/traefik/dynamic/middlewares.yml
+http:
+  middlewares:
+    # Security Headers
+    secure-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 315360000
+        customFrameOptionsValue: "SAMEORIGIN"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+          X-Powered-By: "ChatGPT Clone"
+          Server: "ChatGPT Clone API"
+    
+    # Rate Limiting - Global
+    rate-limit:
+      rateLimit:
+        average: 100
+        period: 1s
+        burst: 200
+    
+    # Rate Limiting - Strict (for auth endpoints)
+    rate-limit-auth:
+      rateLimit:
+        average: 5
+        period: 1m
+        burst: 10
+    
+    # Circuit Breaker
+    circuit-breaker:
+      circuitBreaker:
+        expression: "ResponseCodeRatio(500, 600, 0, 600) > 0.30 || NetworkErrorRatio() > 0.10"
+    
+    # Retry Logic
+    retry:
+      retry:
+        attempts: 3
+        initialInterval: 100ms
+    
+    # CORS
+    cors:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "*"
+        accessControlAllowOriginList:
+          - "https://chatgpt-clone.io"
+          - "https://app.chatgpt-clone.io"
+          - "http://localhost:3000"
+        accessControlMaxAge: 100
+        addVaryHeader: true
+    
+    # JWT Auth
+    jwt-auth:
+      plugin:
+        jwt:
+          source: header
+          headerName: Authorization
+          headerPrefix: "Bearer "
+          signingSecret: "${JWT_SECRET}"
+          claims:
+            - exp
+            - iat
+            - sub
+    
+    # Request ID
+    request-id:
+      plugin:
+        requestId:
+          headerName: X-Request-Id
+          format: uuid
+
+  # Service Routes
+  routers:
+    # User Management Service
+    user-service:
+      rule: "PathPrefix(`/api/v1/users`)"
+      service: user-service
+      middlewares:
+        - secure-headers
+        - rate-limit
+        - jwt-auth
+        - request-id
+        - circuit-breaker
+        - retry
+      tls:
+        certResolver: letsencrypt
+    
+    # Chat Service
+    chat-service:
+      rule: "PathPrefix(`/api/v1/chat`)"
+      service: chat-service
+      middlewares:
+        - secure-headers
+        - rate-limit
+        - jwt-auth
+        - request-id
+        - circuit-breaker
+      tls:
+        certResolver: letsencrypt
+    
+    # WebSocket for Chat
+    chat-ws:
+      rule: "PathPrefix(`/ws`)"
+      service: chat-service-ws
+      middlewares:
+        - secure-headers
+        - jwt-auth
+        - request-id
+      tls:
+        certResolver: letsencrypt
+    
+    # AI Service
+    ai-service:
+      rule: "PathPrefix(`/api/v1/ai`)"
+      service: ai-service
+      middlewares:
+        - secure-headers
+        - rate-limit
+        - jwt-auth
+        - request-id
+        - circuit-breaker
+      tls:
+        certResolver: letsencrypt
+    
+    # Auth Service
+    auth-service:
+      rule: "PathPrefix(`/api/v1/auth`)"
+      service: auth-service
+      middlewares:
+        - secure-headers
+        - rate-limit-auth
+        - request-id
+        - cors
+      tls:
+        certResolver: letsencrypt
+    
+    # Health Check
+    health:
+      rule: "Path(`/health`)"
+      service: health-check
+      middlewares:
+        - secure-headers
+
+  # Service Definitions
+  services:
+    # User Management Service
+    user-service:
+      loadBalancer:
+        servers:
+          - url: "http://user-management-service:8080"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
+          scheme: http
+        sticky:
+          cookie:
+            name: user-service
+            httpOnly: true
+            secure: true
+    
+    # Chat Service HTTP
+    chat-service:
+      loadBalancer:
+        servers:
+          - url: "http://chat-service:8081"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
+    
+    # Chat Service WebSocket
+    chat-service-ws:
+      loadBalancer:
+        servers:
+          - url: "http://chat-service:8081"
+        sticky:
+          cookie:
+            name: chat-ws
+            httpOnly: true
+            secure: true
+    
+    # AI Service
+    ai-service:
+      loadBalancer:
+        servers:
+          - url: "http://ai-service:8083"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
+    
+    # Auth Service
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth-service:8082"
+        healthCheck:
+          path: /health
+          interval: 10s
+          timeout: 3s
+    
+    # Health Check Service
+    health-check:
+      loadBalancer:
+        servers:
+          - url: "http://health-service:8090"
+
+# TLS Configuration
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      cipherSuites:
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+      curvePreferences:
+        - CurveP521
+        - CurveP384
+      sniStrict: true
