@@ -1,0 +1,2 @@
+# ShopMindAI.
+ShopMindAI
