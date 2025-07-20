@@ -1,0 +1,323 @@
+groups:
+  - name: websocket_scaling
+    interval: 30s
+    rules:
+      - alert: WebSocketConnectionsHigh
+        expr: sum(websocket_active_connections) > 500000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High WebSocket connections: {{ $value }}"
+          description: "WebSocket connections approaching scale limits. Current: {{ $value }}"
+          
+      - alert: WebSocketConnectionsCritical
+        expr: sum(websocket_active_connections) > 900000
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          pager: true
+        annotations:
+          summary: "Critical WebSocket connections: {{ $value }}"
+          description: "WebSocket connections near maximum capacity. Immediate scaling required!"
+          runbook_url: "https://wiki.shopmindai.io/runbooks/websocket-scaling"
+          
+      - alert: WebSocketConnectionRateSpike
+        expr: rate(websocket_connections_total[5m]) > 10000
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "WebSocket connection rate spike: {{ $value }}/sec"
+          description: "Unusual spike in WebSocket connections. Possible DDoS or viral event."
+          
+      - alert: WebSocketMemoryLeak
+        expr: rate(go_memstats_alloc_bytes{service="chat-service"}[5m]) > 100000000 and websocket_active_connections > 10000
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Possible WebSocket memory leak detected"
+          description: "Memory usage growing with WebSocket connections. Service: {{ $labels.service }}"
+
+  - name: database_performance
+    interval: 30s
+    rules:
+      - alert: DatabaseConnectionPoolExhaustion
+        expr: (pg_stat_database_numbackends / pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Database connection pool {{ $labels.instance }} at {{ $value | humanizePercentage }}"
+          description: "Connection pool approaching exhaustion. Scale or optimize connections."
+          
+      - alert: DatabaseReplicationLag
+        expr: pg_replication_lag_seconds > 10
+        for: 5m
+        labels:
+          severity: critical
+          team: database
+          pager: true
+        annotations:
+          summary: "Database replication lag: {{ $value }}s"
+          description: "Replication lag on {{ $labels.instance }} is {{ $value }}s. Data consistency at risk!"
+          
+      - alert: DatabaseSlowQueries
+        expr: rate(pg_stat_statements_mean_time_seconds{queryid!=""}[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Slow queries detected on {{ $labels.db }}"
+          description: "Query {{ $labels.queryid }} averaging {{ $value }}s execution time"
+          query_text: "{{ $labels.query }}"
+          
+      - alert: CitusShardImbalance
+        expr: |
+          (max(citus_shard_size_bytes) - min(citus_shard_size_bytes)) 
+          / avg(citus_shard_size_bytes) > 0.3
+        for: 30m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Citus shard imbalance detected"
+          description: "Shard sizes vary by more than 30%. Consider rebalancing."
+
+  - name: cache_efficiency
+    interval: 30s
+    rules:
+      - alert: CacheHitRateLow
+        expr: |
+          sum(rate(redis_hits_total[5m])) / 
+          (sum(rate(redis_hits_total[5m])) + sum(rate(redis_misses_total[5m]))) < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Cache hit rate below 80%: {{ $value | humanizePercentage }}"
+          description: "Low cache hit rate indicates inefficient caching strategy"
+          
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis memory usage high: {{ $value | humanizePercentage }}"
+          description: "Redis instance {{ $labels.instance }} approaching memory limit"
+          
+      - alert: RedisEvictionRate
+        expr: rate(redis_evicted_keys_total[5m]) > 1000
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High Redis eviction rate: {{ $value }}/sec"
+          description: "Redis evicting {{ $value }} keys/sec. Cache undersized or TTLs too long"
+          
+      - alert: CacheStampedeDetected
+        expr: |
+          sum(rate(cache_lock_contentions_total[1m])) by (key_pattern) > 100
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Cache stampede on pattern: {{ $labels.key_pattern }}"
+          description: "Multiple processes competing for same cache key. Implement cache warming."
+
+  - name: kafka_streaming
+    interval: 30s
+    rules:
+      - alert: KafkaConsumerLag
+        expr: kafka_consumer_lag_sum > 100000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Kafka consumer lag: {{ $value }} messages"
+          description: "Consumer {{ $labels.consumer_group }} lagging on topic {{ $labels.topic }}"
+          
+      - alert: KafkaProducerErrors
+        expr: rate(kafka_producer_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Kafka producer errors: {{ $value }}/sec"
+          description: "High producer error rate for topic {{ $labels.topic }}"
+          
+      - alert: KafkaPartitionOffline
+        expr: kafka_partition_offline > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          pager: true
+        annotations:
+          summary: "Kafka partition offline"
+          description: "Partition {{ $labels.partition }} offline for topic {{ $labels.topic }}"
+
+  - name: service_scaling
+    interval: 30s
+    rules:
+      - alert: ServiceCPUThrottling
+        expr: |
+          rate(container_cpu_cfs_throttled_seconds_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "CPU throttling on {{ $labels.pod }}"
+          description: "Pod {{ $labels.pod }} being CPU throttled {{ $value | humanizePercentage }} of the time"
+          
+      - alert: ServiceMemoryPressure
+        expr: |
+          container_memory_working_set_bytes / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High memory usage on {{ $labels.pod }}"
+          description: "Pod {{ $labels.pod }} using {{ $value | humanizePercentage }} of memory limit"
+          
+      - alert: ServiceReplicasMaxed
+        expr: |
+          kube_deployment_status_replicas / kube_deployment_spec_replicas == 1
+          and kube_deployment_spec_replicas >= 100
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.deployment }} at maximum replicas"
+          description: "Deployment at max replicas ({{ $value }}). Manual intervention required."
+          
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} crash looping"
+          description: "Pod restarting {{ $value }}/min. Check logs for errors."
+
+  - name: business_metrics
+    interval: 1m
+    rules:
+      - alert: MessageThroughputDrop
+        expr: |
+          rate(messages_sent_total[5m]) < 0.8 * 
+          avg_over_time(rate(messages_sent_total[5m])[1h:5m] offset 1d)
+        for: 10m
+        labels:
+          severity: warning
+          team: product
+        annotations:
+          summary: "Message throughput dropped by {{ $value | humanizePercentage }}"
+          description: "Significant drop in message volume compared to same time yesterday"
+          
+      - alert: UserEngagementDrop
+        expr: |
+          sum(rate(user_active_total[1h])) < 0.9 * 
+          sum(rate(user_active_total[1h] offset 1d))
+        for: 30m
+        labels:
+          severity: warning
+          team: product
+        annotations:
+          summary: "Active users down {{ $value | humanizePercentage }}"
+          description: "Active user count lower than typical for this time"
+          
+      - alert: AIResponseLatencyHigh
+        expr: |
+          histogram_quantile(0.95, rate(ai_response_duration_seconds_bucket[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "AI response P95 latency: {{ $value }}s"
+          description: "95th percentile AI response time exceeding 5 seconds"
+          
+      - alert: ConversationCreationFailures
+        expr: |
+          rate(conversation_creation_failures_total[5m]) / 
+          rate(conversation_creation_attempts_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High conversation creation failure rate: {{ $value | humanizePercentage }}"
+          description: "More than 5% of conversation creations failing"
+
+  - name: cost_optimization
+    interval: 5m
+    rules:
+      - alert: CloudCostSpike
+        expr: |
+          sum(cloud_resource_cost_dollars) > 1.2 * 
+          avg_over_time(sum(cloud_resource_cost_dollars)[24h:1h] offset 1d)
+        for: 1h
+        labels:
+          severity: warning
+          team: finance
+        annotations:
+          summary: "Cloud costs up {{ $value | humanizePercentage }}"
+          description: "Unusual spike in cloud resource costs. Current: ${{ $value }}/hour"
+          
+      - alert: UnderutilizedResources
+        expr: |
+          avg_over_time(container_cpu_usage_seconds_total[1h]) / 
+          container_spec_cpu_quota < 0.1
+        for: 6h
+        labels:
+          severity: info
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} underutilizing CPU"
+          description: "CPU usage below 10% for 6 hours. Consider scaling down."
+
+  - name: security_monitoring
+    interval: 30s
+    rules:
+      - alert: SuspiciousLoginPattern
+        expr: |
+          sum(rate(auth_login_attempts_total{status="failed"}[5m])) by (ip) > 50
+        for: 2m
+        labels:
+          severity: critical
+          team: security
+          pager: true
+        annotations:
+          summary: "Suspicious login attempts from {{ $labels.ip }}"
+          description: "{{ $value }} failed login attempts/min from IP {{ $labels.ip }}"
+          
+      - alert: RateLimitBypass
+        expr: |
+          sum(rate(http_requests_total[1m])) by (client_ip) > 1000
+          and rate_limit_enforced == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "Possible rate limit bypass from {{ $labels.client_ip }}"
+          description: "Client making {{ $value }} requests/min without rate limiting"

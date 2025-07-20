@@ -19,4 +19,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.17.0
 	github.com/stretchr/testify v1.8.4
 	github.com/testcontainers/testcontainers-go v0.27.0
+	golang.org/x/time v0.5.0
+	gorm.io/gorm v1.25.5
+	gorm.io/driver/postgres v1.5.4
 )

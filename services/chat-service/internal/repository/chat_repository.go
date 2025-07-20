@@ -3,13 +3,17 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+	"sync/atomic"
 )
 
 // ChatRepository handles billions of conversations with smart sharding
@@ -17,17 +21,105 @@ type ChatRepository struct {
 	db    *sql.DB
 	redis *redis.ClusterClient
 	
+	// Prepared statements cache
+	stmts map[string]*sql.Stmt
+	mu    sync.RWMutex
+	
 	// Sharding strategy
 	shardCount int
+	
+	// Metrics
+	cacheHits   int64
+	cacheMisses int64
 }
 
 // NewChatRepository creates a new repository optimized for billions of users
-func NewChatRepository(db *sql.DB, redis *redis.ClusterClient) *ChatRepository {
-	return &ChatRepository{
+func NewChatRepository(db *sql.DB, redis *redis.ClusterClient) (*ChatRepository, error) {
+	repo := &ChatRepository{
 		db:         db,
 		redis:      redis,
 		shardCount: 128, // Matches Citus shard count
+		stmts:      make(map[string]*sql.Stmt),
 	}
+	
+	// Configure connection pool for high concurrency
+	db.SetMaxOpenConns(100)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(15 * time.Minute)
+	
+	// Prepare frequently used statements
+	if err := repo.prepareStatements(); err != nil {
+		return nil, fmt.Errorf("prepare statements: %w", err)
+	}
+	
+	return repo, nil
+}
+
+// prepareStatements prepares commonly used SQL statements
+func (r *ChatRepository) prepareStatements() error {
+	statements := map[string]string{
+		"getConversation": `
+			SELECT 
+				c.id, c.user_id, c.title, c.model, c.system_prompt,
+				c.metadata, c.tokens_used, c.created_at, c.updated_at, c.deleted_at
+			FROM conversations c
+			WHERE c.id = $1 AND c.user_id = $2 AND c.deleted_at IS NULL
+		`,
+		"createConversation": `
+			INSERT INTO conversations (
+				id, user_id, title, model, system_prompt, 
+				metadata, tokens_used, created_at, updated_at
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8, $9
+			) RETURNING id, created_at, updated_at
+		`,
+		"insertMessage": `
+			INSERT INTO messages (
+				id, conversation_id, role, content, function_name,
+				function_args, tokens, metadata, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`,
+		"updateConversationTokens": `
+			UPDATE conversations 
+			SET tokens_used = tokens_used + $1,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2 AND user_id = $3
+		`,
+		"getMessagesWithWindow": `
+			WITH ranked_messages AS (
+				SELECT 
+					id, conversation_id, role, content, function_name,
+					function_args, tokens, metadata, created_at,
+					ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
+				FROM messages
+				WHERE conversation_id = $1
+			)
+			SELECT 
+				id, conversation_id, role, content, function_name,
+				function_args, tokens, metadata, created_at
+			FROM ranked_messages
+			WHERE rn > $2 AND rn <= $3
+			ORDER BY created_at ASC
+		`,
+	}
+	
+	for name, query := range statements {
+		stmt, err := r.db.Prepare(query)
+		if err != nil {
+			return fmt.Errorf("prepare %s: %w", name, err)
+		}
+		r.stmts[name] = stmt
+	}
+	
+	return nil
+}
+
+// getStmt returns a prepared statement by name
+func (r *ChatRepository) getStmt(name string) *sql.Stmt {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.stmts[name]
 }
 
 // Conversation represents a chat conversation
@@ -74,26 +166,12 @@ func (r *ChatRepository) CreateConversation(ctx context.Context, userID uuid.UUI
 		UpdatedAt:  time.Now(),
 	}
 
-	// Transaction for consistency
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Insert with Citus automatic sharding on user_id
-	query := `
-		INSERT INTO conversations (
-			id, user_id, title, model, system_prompt, 
-			metadata, tokens_used, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
-		) RETURNING id, created_at, updated_at
-	`
-	
+	// Use prepared statement
+	stmt := r.getStmt("createConversation")
 	metadataJSON, _ := json.Marshal(conv.Metadata)
-	err = tx.QueryRowContext(
-		ctx, query,
+	
+	err := stmt.QueryRowContext(
+		ctx,
 		conv.ID, conv.UserID, conv.Title, conv.Model, conv.SystemPrompt,
 		metadataJSON, conv.TokensUsed, conv.CreatedAt, conv.UpdatedAt,
 	).Scan(&conv.ID, &conv.CreatedAt, &conv.UpdatedAt)
@@ -102,15 +180,11 @@ func (r *ChatRepository) CreateConversation(ctx context.Context, userID uuid.UUI
 		return nil, fmt.Errorf("insert conversation: %w", err)
 	}
 
-	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
-	}
-
 	// Cache in Redis with TTL (hot data stays in memory)
 	r.cacheConversation(ctx, conv)
 
 	// Publish event for real-time updates
-	r.publishEvent(ctx, "conversation.created", conv)
+	go r.publishEvent(ctx, "conversation.created", conv)
 
 	return conv, nil
 }
@@ -126,43 +200,23 @@ func (r *ChatRepository) GetConversation(ctx context.Context, convID, userID uui
 			// Verify ownership (security)
 			if conv.UserID == userID {
 				r.extendCacheTTL(ctx, cacheKey) // Keep hot data hot
+				atomic.AddInt64(&r.cacheHits, 1)
 				return &conv, nil
 			}
 		}
 	}
+	
+	atomic.AddInt64(&r.cacheMisses, 1)
 
-	// L2 Cache: Database with read replica
-	query := `
-		SELECT 
-			c.id, c.user_id, c.title, c.model, c.system_prompt,
-			c.metadata, c.tokens_used, c.created_at, c.updated_at, c.deleted_at,
-			COUNT(m.id) as message_count,
-			(
-				SELECT json_build_object(
-					'id', m2.id,
-					'role', m2.role,
-					'content', LEFT(m2.content, 100),
-					'created_at', m2.created_at
-				)
-				FROM messages m2
-				WHERE m2.conversation_id = c.id
-				ORDER BY m2.created_at DESC
-				LIMIT 1
-			) as last_message
-		FROM conversations c
-		LEFT JOIN messages m ON m.conversation_id = c.id
-		WHERE c.id = $1 AND c.user_id = $2 AND c.deleted_at IS NULL
-		GROUP BY c.id
-	`
-
+	// L2 Cache: Database with prepared statement
+	stmt := r.getStmt("getConversation")
+	
 	var conv Conversation
 	var metadataJSON []byte
-	var lastMessageJSON sql.NullString
 	
-	err = r.db.QueryRowContext(ctx, query, convID, userID).Scan(
+	err = stmt.QueryRowContext(ctx, convID, userID).Scan(
 		&conv.ID, &conv.UserID, &conv.Title, &conv.Model, &conv.SystemPrompt,
 		&metadataJSON, &conv.TokensUsed, &conv.CreatedAt, &conv.UpdatedAt, &conv.DeletedAt,
-		&conv.MessageCount, &lastMessageJSON,
 	)
 
 	if err == sql.ErrNoRows {
@@ -174,42 +228,60 @@ func (r *ChatRepository) GetConversation(ctx context.Context, convID, userID uui
 
 	// Parse JSON fields
 	json.Unmarshal(metadataJSON, &conv.Metadata)
-	if lastMessageJSON.Valid {
-		json.Unmarshal([]byte(lastMessageJSON.String), &conv.LastMessage)
-	}
 
-	// Update cache
-	r.cacheConversation(ctx, &conv)
+	// Update cache asynchronously
+	go r.cacheConversation(ctx, &conv)
 
 	return &conv, nil
 }
 
 // ListConversations with cursor-based pagination for billions of records
 func (r *ChatRepository) ListConversations(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]*Conversation, string, error) {
-	// Smart pagination using cursor (timestamp + ID for uniqueness)
+	// Decode cursor safely
 	var cursorTime time.Time
 	var cursorID uuid.UUID
 	
 	if cursor != "" {
-		// Decode cursor
-		fmt.Sscanf(cursor, "%s_%s", &cursorTime, &cursorID)
+		decoded, err := base64.StdEncoding.DecodeString(cursor)
+		if err == nil {
+			parts := strings.Split(string(decoded), "|")
+			if len(parts) == 2 {
+				cursorTime, _ = time.Parse(time.RFC3339Nano, parts[0])
+				cursorID, _ = uuid.Parse(parts[1])
+			}
+		}
 	} else {
 		cursorTime = time.Now().Add(time.Hour) // Future time to get all
 		cursorID = uuid.Nil
 	}
 
+	// Use composite index on (user_id, updated_at, id) for efficient pagination
 	query := `
+		WITH conversation_stats AS (
+			SELECT 
+				conversation_id,
+				COUNT(*) as message_count,
+				MAX(created_at) as last_message_at
+			FROM messages
+			WHERE conversation_id IN (
+				SELECT id FROM conversations 
+				WHERE user_id = $1 AND deleted_at IS NULL
+				AND (updated_at, id) < ($2, $3)
+				ORDER BY updated_at DESC, id DESC
+				LIMIT $4
+			)
+			GROUP BY conversation_id
+		)
 		SELECT 
 			c.id, c.title, c.model, c.tokens_used, 
 			c.created_at, c.updated_at,
-			COUNT(m.id) as message_count,
-			MAX(m.created_at) as last_message_at
+			COALESCE(s.message_count, 0) as message_count,
+			s.last_message_at
 		FROM conversations c
-		LEFT JOIN messages m ON m.conversation_id = c.id
+		LEFT JOIN conversation_stats s ON s.conversation_id = c.id
 		WHERE c.user_id = $1 
 			AND c.deleted_at IS NULL
 			AND (c.updated_at, c.id) < ($2, $3)
-		GROUP BY c.id
 		ORDER BY c.updated_at DESC, c.id DESC
 		LIMIT $4
 	`
@@ -226,10 +298,13 @@ func (r *ChatRepository) ListConversations(ctx context.Context, userID uuid.UUID
 	for rows.Next() {
 		if len(conversations) >= limit {
 			// We have one extra for cursor
-			nextCursor = fmt.Sprintf("%s_%s", 
-				conversations[len(conversations)-1].UpdatedAt.Format(time.RFC3339Nano),
-				conversations[len(conversations)-1].ID,
-			)
+			lastConv := conversations[len(conversations)-1]
+			nextCursor = base64.StdEncoding.EncodeToString([]byte(
+				fmt.Sprintf("%s|%s", 
+					lastConv.UpdatedAt.Format(time.RFC3339Nano),
+					lastConv.ID.String(),
+				),
+			))
 			break
 		}
 
@@ -248,9 +323,9 @@ func (r *ChatRepository) ListConversations(ctx context.Context, userID uuid.UUID
 		conversations = append(conversations, &conv)
 	}
 
-	// Batch cache hot conversations
+	// Batch cache hot conversations asynchronously
 	if len(conversations) > 0 {
-		r.batchCacheConversations(ctx, conversations[:min(10, len(conversations))])
+		go r.batchCacheConversations(ctx, conversations[:min(10, len(conversations))])
 	}
 
 	return conversations, nextCursor, nil
@@ -269,35 +344,31 @@ func (r *ChatRepository) SendMessage(ctx context.Context, convID, userID uuid.UU
 	msg.CreatedAt = time.Now()
 
 	// Transaction with optimistic locking
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelReadCommitted,
+	})
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Insert message
+	// Insert message using prepared statement
 	metadataJSON, _ := json.Marshal(msg.Metadata)
 	funcArgsJSON, _ := json.Marshal(msg.FunctionArgs)
 	
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO messages (
-			id, conversation_id, role, content, function_name,
-			function_args, tokens, metadata, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, msg.ID, msg.ConversationID, msg.Role, msg.Content, msg.FunctionName,
-		funcArgsJSON, msg.Tokens, metadataJSON, msg.CreatedAt)
+	stmt := tx.StmtContext(ctx, r.getStmt("insertMessage"))
+	_, err = stmt.ExecContext(ctx,
+		msg.ID, msg.ConversationID, msg.Role, msg.Content, msg.FunctionName,
+		funcArgsJSON, msg.Tokens, metadataJSON, msg.CreatedAt,
+	)
 	
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
 
 	// Update conversation stats (atomic)
-	_, err = tx.ExecContext(ctx, `
-		UPDATE conversations 
-		SET tokens_used = tokens_used + $1,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2 AND user_id = $3
-	`, msg.Tokens, convID, userID)
+	stmt = tx.StmtContext(ctx, r.getStmt("updateConversationTokens"))
+	_, err = stmt.ExecContext(ctx, msg.Tokens, convID, userID)
 	
 	if err != nil {
 		return fmt.Errorf("update conversation: %w", err)
@@ -307,14 +378,17 @@ func (r *ChatRepository) SendMessage(ctx context.Context, convID, userID uuid.UU
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	// Invalidate cache
-	r.invalidateConversationCache(ctx, convID)
-
-	// Publish for real-time streaming
-	r.publishMessage(ctx, msg)
-
-	// Update hot cache for recent messages
-	r.cacheRecentMessage(ctx, msg)
+	// Async operations after commit
+	go func() {
+		// Invalidate cache
+		r.invalidateConversationCache(context.Background(), convID)
+		
+		// Publish for real-time streaming
+		r.publishMessage(context.Background(), msg)
+		
+		// Update hot cache for recent messages
+		r.cacheRecentMessage(context.Background(), msg)
+	}()
 
 	return nil
 }
@@ -334,17 +408,9 @@ func (r *ChatRepository) GetMessages(ctx context.Context, convID, userID uuid.UU
 		}
 	}
 
-	query := `
-		SELECT 
-			id, conversation_id, role, content, function_name,
-			function_args, tokens, metadata, created_at
-		FROM messages
-		WHERE conversation_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
-	`
-
-	rows, err := r.db.QueryContext(ctx, query, convID, limit, offset)
+	// Use window function for efficient pagination
+	stmt := r.getStmt("getMessagesWithWindow")
+	rows, err := stmt.QueryContext(ctx, convID, offset, offset+limit)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -371,10 +437,59 @@ func (r *ChatRepository) GetMessages(ctx context.Context, convID, userID uuid.UU
 
 	// Cache if recent
 	if offset == 0 && len(messages) > 0 {
-		r.cacheRecentMessages(ctx, convID, messages)
+		go r.cacheRecentMessages(ctx, convID, messages)
 	}
 
 	return messages, nil
+}
+
+// BatchCreateMessages for bulk operations
+func (r *ChatRepository) BatchCreateMessages(ctx context.Context, messages []*Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	
+	// Build bulk insert query
+	valueStrings := make([]string, 0, len(messages))
+	valueArgs := make([]interface{}, 0, len(messages)*9)
+	
+	for i, msg := range messages {
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*9+1, i*9+2, i*9+3, i*9+4, i*9+5, i*9+6, i*9+7, i*9+8, i*9+9,
+		))
+		
+		metadataJSON, _ := json.Marshal(msg.Metadata)
+		funcArgsJSON, _ := json.Marshal(msg.FunctionArgs)
+		
+		valueArgs = append(valueArgs,
+			msg.ID, msg.ConversationID, msg.Role, msg.Content, msg.FunctionName,
+			funcArgsJSON, msg.Tokens, metadataJSON, msg.CreatedAt,
+		)
+	}
+	
+	query := fmt.Sprintf(`
+		INSERT INTO messages (
+			id, conversation_id, role, content, function_name,
+			function_args, tokens, metadata, created_at
+		) VALUES %s
+		ON CONFLICT (id) DO NOTHING
+	`, strings.Join(valueStrings, ","))
+	
+	_, err := r.db.ExecContext(ctx, query, valueArgs...)
+	return err
+}
+
+// Close closes the repository and cleans up resources
+func (r *ChatRepository) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	
+	for _, stmt := range r.stmts {
+		stmt.Close()
+	}
+	
+	return nil
 }
 
 // Caching helpers
