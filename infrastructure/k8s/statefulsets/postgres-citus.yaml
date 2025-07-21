@@ -1,0 +1,228 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: shopmindai
+data:
+  postgresql.conf: |
+    # Performance Tuning for Billions of Records
+    shared_buffers = 8GB
+    effective_cache_size = 24GB
+    maintenance_work_mem = 2GB
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    work_mem = 104MB
+    min_wal_size = 2GB
+    max_wal_size = 8GB
+    max_worker_processes = 16
+    max_parallel_workers_per_gather = 8
+    max_parallel_workers = 16
+    max_parallel_maintenance_workers = 8
+    
+    # Citus Configuration
+    shared_preload_libraries = 'citus,pg_stat_statements'
+    citus.shard_count = 128
+    citus.shard_replication_factor = 2
+    citus.distributed_deadlock_detection_factor = 2
+    
+    # Connection pooling
+    max_connections = 1000
+    
+  init-citus.sql: |
+    CREATE EXTENSION IF NOT EXISTS citus;
+    SELECT citus_set_coordinator_host('postgres-coordinator', 5432);
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-coordinator
+  namespace: shopmindai
+spec:
+  serviceName: postgres-coordinator
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-coordinator
+  template:
+    metadata:
+      labels:
+        app: postgres-coordinator
+        role: coordinator
+    spec:
+      containers:
+      - name: postgres
+        image: citusdata/citus:12.1
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: shopmind
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: POSTGRES_DB
+          value: shopmind
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            cpu: 2
+            memory: 16Gi
+          limits:
+            cpu: 8
+            memory: 32Gi
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-config
+          mountPath: /etc/postgresql
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - shopmind
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - shopmind
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-config
+        configMap:
+          name: postgres-config
+      - name: init-scripts
+        configMap:
+          name: postgres-config
+          items:
+          - key: init-citus.sql
+            path: init-citus.sql
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 1Ti
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-worker
+  namespace: shopmindai
+spec:
+  serviceName: postgres-worker
+  replicas: 5  # Start with 5 workers, scale as needed
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: postgres-worker
+  template:
+    metadata:
+      labels:
+        app: postgres-worker
+        role: worker
+    spec:
+      containers:
+      - name: postgres
+        image: citusdata/citus:12.1
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: shopmind
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: COORDINATOR_HOST
+          value: postgres-coordinator
+        resources:
+          requests:
+            cpu: 4
+            memory: 32Gi
+          limits:
+            cpu: 16
+            memory: 64Gi
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-config
+          mountPath: /etc/postgresql
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                sleep 30
+                PGPASSWORD=$POSTGRES_PASSWORD psql -h postgres-coordinator -U shopmind -d shopmind -c "SELECT * FROM citus_add_node('$(hostname).postgres-worker', 5432);"
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 2Ti
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-coordinator
+  namespace: shopmindai
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres-coordinator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-worker
+  namespace: shopmindai
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres-worker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-lb
+  namespace: shopmindai
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres-coordinator

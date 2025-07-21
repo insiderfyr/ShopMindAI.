@@ -1,0 +1,116 @@
+# Traefik configuration
+api:
+  dashboard: true
+  debug: true
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: shopmindai
+  
+  # Service discovery with Consul
+  consulCatalog:
+    endpoint:
+      address: consul:8500
+    exposedByDefault: false
+    prefix: traefik
+
+# Middleware definitions
+http:
+  middlewares:
+    # Rate limiting
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: 1m
+        
+    # CORS
+    cors:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - OPTIONS
+          - PUT
+          - POST
+          - DELETE
+          - PATCH
+        accessControlAllowHeaders:
+          - "*"
+        accessControlAllowOriginList:
+          - "http://localhost:3000"
+          - "https://shopmindai.io"
+        accessControlMaxAge: 100
+        addVaryHeader: true
+        
+    # Security headers
+    security-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customFrameOptionsValue: "SAMEORIGIN"
+        
+    # Auth with Keycloak
+    keycloak-auth:
+      forwardAuth:
+        address: "http://auth-service:8000/auth/verify"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-User-Id"
+          - "X-User-Email"
+          - "X-User-Roles"
+          
+    # Compress responses
+    compress:
+      compress: true
+
+# Metrics for Prometheus
+metrics:
+  prometheus:
+    buckets:
+      - 0.1
+      - 0.3
+      - 1.2
+      - 5.0
+    addEntryPointsLabels: true
+    addServicesLabels: true
+    entryPoint: metrics
+
+# Access logs
+accessLog:
+  filePath: "/logs/access.log"
+  format: json
+  filters:
+    statusCodes:
+      - "200-299"
+      - "400-499"
+      - "500-599"
+    retryAttempts: true
+    minDuration: "10ms"
+
+# Global configuration
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# TLS configuration (for production)
+# certificatesResolvers:
+#   letsencrypt:
+#     acme:
+#       email: admin@shopmindai.io
+#       storage: /letsencrypt/acme.json
+#       httpChallenge:
+#         entryPoint: web

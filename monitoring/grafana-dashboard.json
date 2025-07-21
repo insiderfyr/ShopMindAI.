@@ -1,0 +1,183 @@
+{
+  "dashboard": {
+    "title": "ShopMindAI Backend Monitoring",
+    "uid": "shopmindai-backend",
+    "version": 1,
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Request Rate by Service",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (service)",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service)",
+            "legendFormat": "{{service}} errors"
+          }
+        ]
+      },
+      {
+        "title": "Response Time (p95)",
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (service, le))",
+            "legendFormat": "{{service}} p95"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections",
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(tcp_connections_active) by (service)",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Database Connections",
+        "gridPos": { "x": 0, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "postgres_connections_active",
+            "legendFormat": "Active"
+          }
+        ]
+      },
+      {
+        "title": "Redis Memory Usage",
+        "gridPos": { "x": 8, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "redis_memory_used_bytes / 1024 / 1024",
+            "legendFormat": "MB Used"
+          }
+        ]
+      },
+      {
+        "title": "Kafka Messages/sec",
+        "gridPos": { "x": 16, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rate(kafka_messages_produced_total[5m]))",
+            "legendFormat": "Messages/sec"
+          }
+        ]
+      }
+    ],
+    "refresh": "5s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+} 
+  "dashboard": {
+    "title": "ShopMindAI Backend Monitoring",
+    "uid": "shopmindai-backend",
+    "version": 1,
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Request Rate by Service",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (service)",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service)",
+            "legendFormat": "{{service}} errors"
+          }
+        ]
+      },
+      {
+        "title": "Response Time (p95)",
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (service, le))",
+            "legendFormat": "{{service}} p95"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections",
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(tcp_connections_active) by (service)",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Database Connections",
+        "gridPos": { "x": 0, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "postgres_connections_active",
+            "legendFormat": "Active"
+          }
+        ]
+      },
+      {
+        "title": "Redis Memory Usage",
+        "gridPos": { "x": 8, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "redis_memory_used_bytes / 1024 / 1024",
+            "legendFormat": "MB Used"
+          }
+        ]
+      },
+      {
+        "title": "Kafka Messages/sec",
+        "gridPos": { "x": 16, "y": 16, "w": 8, "h": 6 },
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(rate(kafka_messages_produced_total[5m]))",
+            "legendFormat": "Messages/sec"
+          }
+        ]
+      }
+    ],
+    "refresh": "5s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+} 

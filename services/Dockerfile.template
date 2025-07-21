@@ -1,0 +1,97 @@
+# Multi-stage build for Go microservices
+# Optimized for minimal size and security
+
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+# CGO_ENABLED=0 for static binary
+# -ldflags for smaller binary size
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.Version=$(git describe --tags --always)" \
+    -o app ./cmd/server
+
+# Final stage - distroless for security
+FROM gcr.io/distroless/static:nonroot
+
+# Copy binary from builder
+COPY --from=builder /build/app /app
+
+# Copy SSL certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Use non-root user
+USER nonroot:nonroot
+
+# Expose ports (customize per service)
+EXPOSE 8080 50051
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/app", "health"]
+
+# Run the application
+ENTRYPOINT ["/app"] 
+# Optimized for minimal size and security
+
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+# CGO_ENABLED=0 for static binary
+# -ldflags for smaller binary size
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.Version=$(git describe --tags --always)" \
+    -o app ./cmd/server
+
+# Final stage - distroless for security
+FROM gcr.io/distroless/static:nonroot
+
+# Copy binary from builder
+COPY --from=builder /build/app /app
+
+# Copy SSL certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Use non-root user
+USER nonroot:nonroot
+
+# Expose ports (customize per service)
+EXPOSE 8080 50051
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/app", "health"]
+
+# Run the application
+ENTRYPOINT ["/app"] 

@@ -1,0 +1,29 @@
+# ShopMindAI Code Ownership
+
+# Global owners
+* @shopmindai/core-team
+
+# Frontend
+/apps/web/ @shopmindai/frontend-team
+/apps/mobile/ @shopmindai/mobile-team
+/apps/admin/ @shopmindai/admin-team
+/packages/ui/ @shopmindai/design-system-team
+
+# Backend Services
+/services/auth-service/ @shopmindai/auth-team @shopmindai/security-team
+/services/chat-service/ @shopmindai/chat-team
+/services/product-service/ @shopmindai/product-team
+/services/payment-service/ @shopmindai/payments-team @shopmindai/security-team
+
+# Infrastructure
+/infrastructure/ @shopmindai/infrastructure-team
+/platform/ @shopmindai/platform-team
+/.github/workflows/ @shopmindai/devops-team
+
+# Documentation
+/docs/ @shopmindai/documentation-team
+*.md @shopmindai/documentation-team
+
+# Security
+/platform/security/ @shopmindai/security-team
+/tests/security/ @shopmindai/security-team
